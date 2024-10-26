@@ -1,56 +1,84 @@
+import pandas as pd
 import streamlit as st
-from openai import OpenAI
+from langchain.agents import AgentType
+from langchain_experimental.agents import create_pandas_dataframe_agent
+from langchain_ollama import ChatOllama
 
-# Show title and description.
-st.title("💬 Chatbot")
-st.write(
-    "This is a simple chatbot that uses OpenAI's GPT-3.5 model to generate responses. "
-    "To use this app, you need to provide an OpenAI API key, which you can get [here](https://platform.openai.com/account/api-keys). "
-    "You can also learn how to build this app step by step by [following our tutorial](https://docs.streamlit.io/develop/tutorials/llms/build-conversational-apps)."
+
+# streamlit web app configuration
+st.set_page_config(
+    page_title="DF Chat",
+    page_icon="💬",
+    layout="centered"
 )
 
-# Ask user for their OpenAI API key via `st.text_input`.
-# Alternatively, you can store the API key in `./.streamlit/secrets.toml` and access it
-# via `st.secrets`, see https://docs.streamlit.io/develop/concepts/connections/secrets-management
-openai_api_key = st.text_input("OpenAI API Key", type="password")
-if not openai_api_key:
-    st.info("Please add your OpenAI API key to continue.", icon="🗝️")
-else:
 
-    # Create an OpenAI client.
-    client = OpenAI(api_key=openai_api_key)
+def read_data(file):
+    if file.name.endswith(".csv"):
+        return pd.read_csv(file)
+    else:
+        return pd.read_excel(file)
 
-    # Create a session state variable to store the chat messages. This ensures that the
-    # messages persist across reruns.
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
 
-    # Display the existing chat messages via `st.chat_message`.
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+# streamlit page title
+st.title("🤖 DataFrame ChatBot - Ollama")
 
-    # Create a chat input field to allow the user to enter a message. This will display
-    # automatically at the bottom of the page.
-    if prompt := st.chat_input("What is up?"):
+# initialize chat history in streamlit session state
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
 
-        # Store and display the current prompt.
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
+# initiate df iin session state
+if "df" not in st.session_state:
+    st.session_state.df = None
 
-        # Generate a response using the OpenAI API.
-        stream = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": m["role"], "content": m["content"]}
-                for m in st.session_state.messages
-            ],
-            stream=True,
-        )
 
-        # Stream the response to the chat using `st.write_stream`, then store it in 
-        # session state.
-        with st.chat_message("assistant"):
-            response = st.write_stream(stream)
-        st.session_state.messages.append({"role": "assistant", "content": response})
+# file upload widget
+uploaded_file = st.file_uploader("Choose a file", type=["csv", "xlsx", "xls"])
+
+if uploaded_file:
+    st.session_state.df = read_data(uploaded_file)
+    st.write("DataFrame Preview:")
+    st.dataframe(st.session_state.df.head())
+
+
+# display chat history
+for message in st.session_state.chat_history:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+
+
+
+# input field for user's message
+user_prompt = st.chat_input("Jigan amare...")
+
+if user_prompt:
+    # add user's message to chat history and display it
+    st.chat_message("user").markdown(user_prompt)
+    st.session_state.chat_history.append({"role":"user","content": user_prompt})
+
+    # loading the LLM
+    llm = ChatOllama(model="gemma:2b", temperature=0)
+
+    pandas_df_agent = create_pandas_dataframe_agent(
+        llm,
+        st.session_state.df,
+        verbose=True,
+        agent_type=AgentType.OPENAI_FUNCTIONS,
+        allow_dangerous_code=True
+    )
+
+    messages = [
+        {"role":"system", "content": "You are a helpful assistant"},
+        *st.session_state.chat_history
+    ]
+
+    response = pandas_df_agent.invoke(messages)
+
+    assistant_response = response["output"]
+
+    st.session_state.chat_history.append({"role":"assistant", "content": assistant_response})
+
+    # display LLM response
+    with st.chat_message("assistant"):
+        st.markdown(assistant_response)
